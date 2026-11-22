@@ -1,0 +1,105 @@
+name: Update profile
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      task:
+        description: What to refresh
+        required: true
+        type: choice
+        default: telemetry
+        options:
+          - telemetry
+          - new-game
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: profile-surface
+  cancel-in-progress: false
+
+jobs:
+  telemetry:
+    if: github.event_name == 'schedule' || github.event.inputs.task == 'telemetry'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Contribution snake
+        uses: Platane/snk/svg-only@v3
+        with:
+          github_user_name: ${{ github.repository_owner }}
+          outputs: |
+            assets/github-contribution-grid-snake.svg
+            assets/github-contribution-grid-snake-dark.svg?palette=github-dark
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Terminal card
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: python3 scripts/terminal_card.py
+
+      - name: Commit telemetry
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            assets/terminal.svg \
+            assets/github-contribution-grid-snake.svg \
+            assets/github-contribution-grid-snake-dark.svg
+          git diff --cached --quiet && exit 0
+          git commit -m "chore: refresh profile telemetry"
+          git push
+
+  chess:
+    if: >-
+      (github.event_name == 'issues' && startsWith(github.event.issue.title, 'Chess:'))
+      || github.event.inputs.task == 'new-game'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install chess
+        run: python3 -m pip install chess
+
+      - name: Play the move
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          ISSUE_TITLE: ${{ github.event.issue.title || 'Chess: Start new game' }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login || github.repository_owner }}
+        run: python3 scripts/chess_readme.py
+
+      - name: Commit the board
+        run: |
+          changed=$(python3 -c 'import json; print(json.load(open("/tmp/chess-result.json"))["changed"])')
+          if [ "$changed" != "True" ]; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md assets/chess.json
+          git diff --cached --quiet && exit 0
+          git commit -m "chess: update board"
+          git push
+
+      - name: Close the move issue
+        if: github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          reply=$(python3 -c 'import json; print(json.load(open("/tmp/chess-result.json"))["reply"])')
+          gh issue close "$ISSUE" --comment "$reply"
